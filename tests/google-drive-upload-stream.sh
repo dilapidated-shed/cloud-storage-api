@@ -175,7 +175,7 @@ run_upload interrupt-before-commit 700000 >/dev/null
 run_upload lost-response-after-commit 700000 >/dev/null
 run_upload fewer-ack 700000 >/dev/null
 
-big_plan=$(/tmp/google-drive-upload-state plan 4294967297 4294967296 67108864)
+big_plan=$($helper plan 4294967297 4294967296 67108864)
 printf '%s\n' "$big_plan" | grep -F '4294967296' >/dev/null
 printf '%s\n' 'google-drive resumable stream deterministic contract passes'
 trap - EXIT HUP INT TERM
