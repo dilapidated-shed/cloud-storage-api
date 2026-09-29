@@ -1,0 +1,103 @@
+name: Google Drive D NetBSD amd64
+
+on:
+  push:
+    branches: [build/netbsd-amd64-d]
+  pull_request:
+    paths:
+      - commands/google_drive_api.d
+      - commands/google-drive-v3-methods.tsv
+      - .github/workflows/google-drive-api-d-netbsd.yml
+
+permissions:
+  contents: read
+
+jobs:
+  netbsd-9_3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Compile and smoke-test D client in NetBSD 9.3
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92
+        with:
+          release: "9.3"
+          arch: x86_64
+          sync: rsync
+          prepare: |
+            set -eu
+            /usr/sbin/pkg_add -I gcc9 curl
+          run: |
+            set -eux
+            uname -a
+            /sbin/sysctl hw.model hw.ncpu || true
+
+            gdc=
+            for candidate in /usr/pkg/gcc9/bin/gdc /usr/pkg/bin/gdc gdc; do
+              if command -v "$candidate" >/dev/null 2>&1; then
+                gdc=$(command -v "$candidate")
+                break
+              fi
+              if [ -x "$candidate" ]; then
+                gdc=$candidate
+                break
+              fi
+            done
+            if [ -z "$gdc" ]; then
+              /usr/sbin/pkg_info -L gcc9 | grep -E '/gdc[^/]*$' || true
+              printf '%s\n' 'gcc9 installed but no GDC executable was found' >&2
+              exit 1
+            fi
+
+            "$gdc" --version
+            /usr/pkg/bin/curl-config --version
+            mkdir -p "$GITHUB_WORKSPACE/_/netbsd-d"
+
+            curl_cflags=$(/usr/pkg/bin/curl-config --cflags)
+            curl_libs=$(/usr/pkg/bin/curl-config --libs)
+
+            build_one() {
+              name=$1
+              shift
+              output="$GITHUB_WORKSPACE/_/netbsd-d/$name"
+              "$gdc" \
+                -O3 -frelease -flto \
+                -J"$GITHUB_WORKSPACE/commands" \
+                "$@" \
+                $curl_cflags \
+                "$GITHUB_WORKSPACE/commands/google_drive_api.d" \
+                -o "$output" \
+                $curl_libs
+              /usr/bin/strip "$output"
+              test "$("$output" methods | wc -l | tr -d '[:space:]')" = 64
+              "$output" surface | cmp "$GITHUB_WORKSPACE/commands/google-drive-v3-methods.tsv" -
+              /usr/bin/file "$output"
+              /usr/bin/ldd "$output" || true
+              /usr/bin/size "$output" || true
+              /usr/bin/cksum -a SHA256 "$output"
+            }
+
+            build_one google-drive-api-d-netbsd-9.3-amd64-generic -march=x86-64
+            build_one google-drive-api-d-netbsd-9.3-amd64-x5460 -march=core2 -mtune=core2 -msse4.1
+
+            {
+              printf 'source_revision=%s\n' '${{ github.event.pull_request.head.sha || github.sha }}'
+              printf 'target=NetBSD 9.3 amd64\n'
+              printf 'generic_flags=%s\n' '-O3 -frelease -flto -march=x86-64'
+              printf 'x5460_flags=%s\n' '-O3 -frelease -flto -march=core2 -mtune=core2 -msse4.1'
+              printf 'compiler=%s\n' "$gdc"
+              "$gdc" --version | head -n 1
+            } > "$GITHUB_WORKSPACE/_/netbsd-d/receipt.txt"
+
+      - name: Upload NetBSD D binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: google-drive-api-d-netbsd-9.3-amd64-${{ github.sha }}
+          path: _/netbsd-d/
+          if-no-files-found: error
+          retention-days: 7
