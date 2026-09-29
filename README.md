@@ -50,18 +50,29 @@ The leading `drive.` in a discovery method ID is optional. Query parameter names
 and provider IDs remain Google Drive names; the command does not flatten them
 into filesystem concepts.
 
-Methods that advertise media upload use `--media FILE` plus a required
-`--session-file FILE`. The command starts a resumable upload session, records
-the session URI before transferring content, and retains that record on failure.
-This keeps the large-upload boundary restartable rather than quietly treating a
-large body as an ordinary request.
+Methods that advertise media upload retain the compatible `--media FILE` path.
+For a producer that can reproduce bounded byte ranges, `--source-program
+PROGRAM --media-size BYTES` adds real chunk-level resumability. The producer
+receives `GOOGLE_DRIVE_SOURCE_OFFSET`, `GOOGLE_DRIVE_SOURCE_LENGTH`, and
+`GOOGLE_DRIVE_SOURCE_TOTAL`, and writes exactly that range to stdout. The
+client persists the resumable session before payload bytes, queries Drive after
+uncertain responses, resumes at Drive's acknowledged prefix, and records a
+mode-0600 receipt without exposing the session URI.
+
+`commands/sdf-mailbox-stream-upload.grease` captures the SDF mailbox's fixed
+length and device/inode identity, then uses the system OpenSSH client through
+`commands/sdf-mailbox-range.grease` to read exactly `[0,T)`. It does not parse,
+normalize, compress, or stage the mailbox locally. The command requests the
+narrow `drive.readonly + drive.file` credential through
+`google-drive-auth authorize ... --stream-upload`.
 
 `commands/google-drive-auth.grease` implements the installed-application OAuth
 flow with PKCE, state validation, a random loopback callback port, private
 refresh-token storage, expiry handling, and automatic refresh. Authorization is
 read-only by default. `authorize`, `authorize-android`, and `begin` accept
-`--copy-tree` to request `drive.readonly + drive.file` for server-side archive
-copies without requesting the broad `drive` scope. Set
+`--copy-tree` or `--stream-upload` to request `drive.readonly + drive.file`
+for server-side copies or new streamed archive files without requesting the
+broad `drive` scope. Set
 `GOOGLE_DRIVE_CREDENTIAL_FILE` to that private credential; ordinary API,
 download, ZIP-range, and copy-tree requests no longer require a manually copied
 hourly access token. Explicit `GOOGLE_ACCESS_TOKEN` and

@@ -104,6 +104,12 @@ printf '%s\n' "$copy_scope_url" | grep -F 'scope=https%3A%2F%2Fwww.googleapis.co
 grep -F 'scope=https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file' "$copy_scope_credential.pending" >/dev/null
 common_env cancel "$copy_scope_credential" >/dev/null
 
+stream_scope_credential=$temporary/config/google-drive-stream-scope.credentials
+common_env init "$client_json" "$stream_scope_credential" >/dev/null
+stream_scope_url=$(common_env begin "$stream_scope_credential" http://127.0.0.1:53684 --stream-upload)
+printf '%s\n' "$stream_scope_url" | grep -F 'scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file' >/dev/null
+common_env cancel "$stream_scope_credential" >/dev/null
+
 if printf '%s\n' "$authorization_url" | grep -F 'CLIENT_SECRET' >/dev/null; then
     printf '%s\n' 'client secret leaked into authorization URL' >&2
     exit 1

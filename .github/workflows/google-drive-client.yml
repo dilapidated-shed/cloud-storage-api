@@ -6,6 +6,9 @@ on:
       - AGENTS.md
       - README.md
       - commands/google-drive-api.grease
+      - commands/google-drive-upload-state.c
+      - commands/sdf-mailbox-range.grease
+      - commands/sdf-mailbox-stream-upload.grease
       - commands/google-drive-auth.grease
       - commands/google-drive-authorization-handoff.grease
       - commands/google-drive-copy-tree.grease
@@ -14,7 +17,10 @@ on:
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
       - docs/google-drive-auth-download.md
+      - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
+      - tests/google-drive-upload-stream.sh
+      - tests/sdf-mailbox-stream-upload.sh
       - tests/google-drive-copy-tree.sh
       - tests/google-drive-download.sh
       - tests/live-takeout-extract.sh
@@ -26,6 +32,9 @@ on:
       - AGENTS.md
       - README.md
       - commands/google-drive-api.grease
+      - commands/google-drive-upload-state.c
+      - commands/sdf-mailbox-range.grease
+      - commands/sdf-mailbox-stream-upload.grease
       - commands/google-drive-auth.grease
       - commands/google-drive-authorization-handoff.grease
       - commands/google-drive-copy-tree.grease
@@ -34,7 +43,10 @@ on:
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
       - docs/google-drive-auth-download.md
+      - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
+      - tests/google-drive-upload-stream.sh
+      - tests/sdf-mailbox-stream-upload.sh
       - tests/google-drive-copy-tree.sh
       - tests/google-drive-download.sh
       - tests/live-takeout-extract.sh
@@ -81,6 +93,9 @@ jobs:
           cc -std=c99 -Wall -Wextra -Werror -O2 \
             commands/google-drive-download-state.c \
             -o _/test-bin/google-drive-download-state
+          cc -std=c99 -Wall -Wextra -Werror -O2 \
+            commands/google-drive-upload-state.c \
+            -o _/test-bin/google-drive-upload-state
           (cd grease-source && build/py.sh minimal)
           grease-source/bin/osh -c 'echo grease-runtime-ready'
 
@@ -114,9 +129,12 @@ jobs:
           export GREASE="$PWD/grease-source/bin/osh"
           export GOOGLE_OAUTH_LOOPBACK="$PWD/_/test-bin/google-oauth-loopback"
           export GOOGLE_DRIVE_DOWNLOAD_STATE="$PWD/_/test-bin/google-drive-download-state"
+          export GOOGLE_DRIVE_UPLOAD_STATE="$PWD/_/test-bin/google-drive-upload-state"
           sh tests/google-drive-auth.sh
           sh tests/google-drive-copy-tree.sh
           sh tests/google-drive-download.sh
+          sh tests/sdf-mailbox-stream-upload.sh
+          sh tests/google-drive-upload-stream.sh
 
       - name: State evidence boundary
         shell: sh
