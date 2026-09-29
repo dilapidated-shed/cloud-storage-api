@@ -64,6 +64,41 @@ env:
   GREASE_SOURCE_REVISION: 8052868773077602266d80bf39aad6998e2da749
 
 jobs:
+  armv7-upload-state-artifact:
+    name: ARMv7 upload-state helper
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out cloud storage commands
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install ARMv7 cross compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes gcc-arm-linux-gnueabihf
+
+      - name: Build and identify helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _/armv7
+          arm-linux-gnueabihf-gcc \
+            -std=c99 -Wall -Wextra -Werror -O2 -static \
+            commands/google-drive-upload-state.c \
+            -o _/armv7/google-drive-upload-state
+          file _/armv7/google-drive-upload-state
+          sha256sum _/armv7/google-drive-upload-state \
+            | tee _/armv7/google-drive-upload-state.sha256
+
+      - name: Publish ARMv7 helper artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-drive-upload-state-armv7
+          path: _/armv7/
+          if-no-files-found: error
+
   oauth-and-restartable-download:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
