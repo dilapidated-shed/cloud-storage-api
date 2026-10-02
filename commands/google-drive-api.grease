@@ -37,15 +37,31 @@ Options:
       Only methods whose discovery entry has a request schema accept this option.
 
   --media FILE
-      Upload FILE through the resumable upload URI. Only discovery methods that
-      advertise media upload accept this option.
+      Existing complete-file resumable upload interface. Its behavior remains
+      compatible; use --source-program for bounded chunk-level recovery.
+
+  --source-program PROGRAM
+      Reproducible bounded producer for a large upload. The program receives
+      GOOGLE_DRIVE_SOURCE_OFFSET, GOOGLE_DRIVE_SOURCE_LENGTH, and
+      GOOGLE_DRIVE_SOURCE_TOTAL in its environment and writes exactly that
+      byte range to stdout. It is called again after a restart.
+
+  --media-size BYTES
+      Fixed final size for --source-program. This is not needed with --media.
+
+  --chunk-size BYTES
+      Resumable chunk size, a positive multiple of 256 KiB. Default: 64 MiB.
+
+  --receipt-file FILE
+      Write a mode-0600 completion or failure receipt without the session URI.
 
   --media-type MIME_TYPE
       MIME type for --media. Default: application/octet-stream.
 
   --session-file FILE
-      Durable resumable-upload session record. Required with --media.
-      The session URI is written before content upload and retained on failure.
+      Durable resumable-upload session record. Required with --media or
+      --source-program. The session URI is written before content upload and
+      retained on failure; it is never printed in diagnostics or receipts.
 
 Environment:
   GOOGLE_ACCESS_TOKEN
@@ -197,6 +213,11 @@ prepare_curl() {
     curl_config=$temporary/curl.conf
 
     cleanup() {
+        if [ -n "${receipt_file:-}" ] && [ "${receipt_status:-incomplete}" != complete ] &&
+           [ -n "${media_size:-}" ]; then
+            receipt_status=incomplete
+            write_receipt >/dev/null 2>&1 || :
+        fi
         rm -rf "$temporary"
     }
     trap cleanup EXIT HUP INT TERM
@@ -284,14 +305,16 @@ request_regular() {
         return
     fi
 
-    response_status=$(awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/{status=$2} END{print status}' "$response_headers")
+    response_status=$(tr -d '\r' < "$response_headers" |
+        awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/{status=$2} END{print status}')
     if [ "$response_status" = 401 ] && refresh_curl_config; then
         : > "$response_headers"
         : > "$response_error"
         if curl --config "$curl_config" "$@" "$request_url" 2>"$response_error"; then
             return
         fi
-        response_status=$(awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/{status=$2} END{print status}' "$response_headers")
+        response_status=$(tr -d '\r' < "$response_headers" |
+            awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/{status=$2} END{print status}')
     fi
 
     case $response_status in
@@ -303,6 +326,35 @@ request_regular() {
     return 1
 }
 
+upload_state=${GOOGLE_DRIVE_UPLOAD_STATE:-$script_directory/google-drive-upload-state}
+default_chunk_size=67108864
+source_block_size=262144
+
+run_upload_state() {
+    [ -x "$upload_state" ] || command -v "$upload_state" >/dev/null 2>&1 ||
+        fail "google-drive-upload-state helper not found: $upload_state"
+    "$upload_state" "$@"
+}
+
+validate_decimal() {
+    number_name=$1
+    number_value=$2
+    case $number_value in
+        ''|*[!0-9]*) fail "$number_name must be an unsigned decimal integer" ;;
+    esac
+}
+
+validate_sha256() {
+    case $1 in
+        ''|*[!0-9A-Fa-f]*) fail 'source SHA-256 must be hexadecimal' ;;
+    esac
+    [ "${#1}" -eq 64 ] || fail 'source SHA-256 must contain 64 hexadecimal digits'
+}
+
+session_field() {
+    sed -n "s/^$1=//p" "$session_file" | tail -n 1
+}
+
 write_session_record() {
     session_uri=$1
     session_directory=$(dirname -- "$session_file")
@@ -311,20 +363,55 @@ write_session_record() {
 
     session_temporary=$session_file.tmp.$$
     {
+        printf 'format=2\n'
         printf 'method=%s\n' "$requested_method"
         printf 'path=%s\n' "$api_path"
         printf 'media=%s\n' "$media_file"
+        printf 'source_program=%s\n' "$source_program"
         printf 'media_type=%s\n' "$media_type"
         printf 'media_size=%s\n' "$media_size"
+        printf 'chunk_size=%s\n' "$chunk_size"
+        printf 'source_sha256=%s\n' "$source_sha256"
+        printf 'next_offset=%s\n' "$next_offset"
         printf 'session_uri=%s\n' "$session_uri"
     } > "$session_temporary"
+    chmod 600 "$session_temporary"
     mv -f -- "$session_temporary" "$session_file"
 }
 
 read_session_uri() {
     [ -f "$session_file" ] || return 1
-    session_uri=$(sed -n 's/^session_uri=//p' "$session_file" | tail -n 1)
-    [ -n "$session_uri" ]
+    stored_method=$(session_field method)
+    stored_path=$(session_field path)
+    stored_media_type=$(session_field media_type)
+    stored_media=$(session_field media)
+    stored_media_size=$(session_field media_size)
+    stored_chunk_size=$(session_field chunk_size)
+    stored_source_program=$(session_field source_program)
+    stored_source_sha256=$(session_field source_sha256)
+    stored_next_offset=$(session_field next_offset)
+    session_uri=$(session_field session_uri)
+    [ -n "$session_uri" ] || fail 'resumable session record has no session URI'
+    [ "$stored_method" = "$requested_method" ] ||
+        fail 'resumable session belongs to another Drive method'
+    [ "$stored_path" = "$api_path" ] ||
+        fail 'resumable session belongs to another Drive path'
+    [ "$stored_media_type" = "$media_type" ] ||
+        fail 'resumable session has a different media type'
+    [ "$stored_media" = "$media_file" ] ||
+        fail 'resumable session belongs to another media source'
+    [ "$stored_media_size" = "$media_size" ] ||
+        fail 'resumable session has a different final size'
+    [ "$stored_source_program" = "$source_program" ] ||
+        fail 'resumable session belongs to another source producer'
+    if [ -n "$stored_chunk_size" ]; then
+        [ "$stored_chunk_size" = "$chunk_size" ] ||
+            fail 'resumable session has a different chunk size'
+    fi
+    next_offset=${stored_next_offset:-0}
+    validate_decimal next_offset "$next_offset"
+    source_sha256=${stored_source_sha256:-}
+    if [ -n "$source_sha256" ]; then validate_sha256 "$source_sha256"; fi
 }
 
 start_resumable_session() {
@@ -371,7 +458,218 @@ start_resumable_session() {
         exit 1
     }
 
+    next_offset=0
     write_session_record "$session_uri"
+}
+
+run_source_range() {
+    source_offset=$1
+    source_length=$2
+    source_chunk=$3
+    if [ -n "$source_program" ]; then
+        source_runner=${GOOGLE_DRIVE_SOURCE_RUNNER:-}
+        if [ -n "$source_runner" ]; then
+            if ! GOOGLE_DRIVE_SOURCE_OFFSET=$source_offset \
+                GOOGLE_DRIVE_SOURCE_LENGTH=$source_length \
+                GOOGLE_DRIVE_SOURCE_TOTAL=$media_size \
+                    "$source_runner" "$source_program" > "$source_chunk"; then
+                return 1
+            fi
+        else
+            if ! GOOGLE_DRIVE_SOURCE_OFFSET=$source_offset \
+                GOOGLE_DRIVE_SOURCE_LENGTH=$source_length \
+                GOOGLE_DRIVE_SOURCE_TOTAL=$media_size \
+                    "$source_program" > "$source_chunk"; then
+                return 1
+            fi
+        fi
+    else
+        if ! dd if="$media_file" iflag=skip_bytes,count_bytes \
+            skip="$source_offset" count="$source_length" status=none > "$source_chunk"; then
+            return 1
+        fi
+    fi
+    actual_length=$(run_upload_state size "$source_chunk")
+    if [ "$actual_length" != "$source_length" ]; then
+        printf 'source producer returned %s bytes; expected %s\n' \
+            "$actual_length" "$source_length" >&2
+        return 1
+    fi
+}
+
+hash_source() {
+    if [ -z "$source_program" ]; then
+        source_sha256=$(sha256sum -- "$media_file" | awk '{print tolower($1)}')
+        validate_sha256 "$source_sha256"
+        return
+    fi
+
+    hash_output=$temporary/source.sha256
+    hash_failure=$temporary/source-hash.failure
+    : > "$hash_failure"
+    {
+        hash_offset=0
+        while :; do
+            hash_plan=$(run_upload_state plan "$media_size" "$hash_offset" "$chunk_size")
+            case $hash_plan in
+                complete) break ;;
+            esac
+            set -- $hash_plan
+            hash_length=$4
+            hash_next=$5
+            hash_chunk=$temporary/hash-chunk
+            if ! run_source_range "$hash_offset" "$hash_length" "$hash_chunk"; then
+                printf '%s\n' 'source producer failed during preflight hashing' > "$hash_failure"
+                exit 1
+            fi
+            cat -- "$hash_chunk"
+            hash_offset=$hash_next
+        done
+    } | sha256sum > "$hash_output"
+    [ ! -s "$hash_failure" ] || fail "$(cat "$hash_failure")"
+    source_sha256=$(awk '{print tolower($1)}' "$hash_output")
+    validate_sha256 "$source_sha256"
+}
+
+parse_response_status() {
+    response_status=$(tr -d '\r' < "$response_headers" |
+        awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/{status=$2} END{print status}')
+}
+
+parse_acknowledged_range() {
+    acknowledged_range=$(sed -n 's/^[Rr][Aa][Nn][Gg][Ee]:[[:space:]]*//p' \
+        "$response_headers" | tr -d '\r' | tail -n 1)
+    if [ -z "$acknowledged_range" ]; then
+        acknowledged_bytes=0
+    else
+        acknowledged_bytes=$(run_upload_state ack "$media_size" "$acknowledged_range")
+    fi
+}
+
+write_receipt() {
+    [ -n "$receipt_file" ] || return 0
+    receipt_directory=$(dirname -- "$receipt_file")
+    mkdir -p "$receipt_directory"
+    receipt_temporary=$receipt_file.tmp.$$
+    provider_json=${provider_response:-null}
+    if ! printf '%s' "$provider_json" | jq -e . >/dev/null 2>&1; then
+        provider_json=null
+    fi
+    jq -cn \
+        --arg status "${receipt_status:-incomplete}" \
+        --arg method "$requested_method" \
+        --arg source_program "$source_program" \
+        --arg media "$media_file" \
+        --arg media_type "$media_type" \
+        --arg total "$media_size" \
+        --arg chunk_size "$chunk_size" \
+        --arg next_offset "${next_offset:-0}" \
+        --arg source_sha256 "${source_sha256:-}" \
+        --argjson provider "$provider_json" \
+        '{kind:"google-drive-upload-receipt",status:$status,method:$method,
+          source_program:(if $source_program=="" then null else $source_program end),
+          media:(if $media=="" then null else $media end),media_type:$media_type,
+          total_bytes:($total|tonumber),chunk_size:($chunk_size|tonumber),
+          acknowledged_bytes:($next_offset|tonumber),
+          source_sha256:(if $source_sha256=="" then null else $source_sha256 end),
+          provider:$provider}' > "$receipt_temporary"
+    chmod 600 "$receipt_temporary"
+    mv -f -- "$receipt_temporary" "$receipt_file"
+}
+
+fetch_final_metadata() {
+    provider_id=$(printf '%s' "$provider_response" | jq -r '.id // empty')
+    [ -n "$provider_id" ] || fail 'completed Drive upload returned no object ID'
+    final_url=$base_url$api_path
+    final_url=$base_url'files/'"$(encode_url_component "$provider_id")"'?fields=id,name,mimeType,size,md5Checksum,sha1Checksum,sha256Checksum'
+    final_metadata=$temporary/final-metadata.json
+    if ! curl --config "$curl_config" --fail --silent --show-error \
+        --request GET --output "$final_metadata" "$final_url"; then
+        fail 'Drive upload completed but final object metadata could not be read'
+    fi
+    provider_response=$(cat -- "$final_metadata")
+    provider_size=$(printf '%s' "$provider_response" | jq -r '.size // empty')
+    [ "$provider_size" = "$media_size" ] ||
+        fail "final Drive object size is $provider_size; expected $media_size"
+    provider_sha256=$(printf '%s' "$provider_response" | jq -r '.sha256Checksum // empty | ascii_downcase')
+    if [ -n "$provider_sha256" ] && [ "$provider_sha256" != "$source_sha256" ]; then
+        fail 'final Drive sha256Checksum does not match the source SHA-256'
+    fi
+    if [ -n "$source_program" ]; then
+        expected_source_sha256=$source_sha256
+        hash_source
+        [ "$source_sha256" = "$expected_source_sha256" ] ||
+            fail 'SDF/source generation changed while the upload was in progress'
+    fi
+}
+
+status_query() {
+    response_headers=$temporary/status.headers
+    response_body=$temporary/status.body
+    : > "$response_headers"
+    : > "$response_body"
+    curl --config "$curl_config" --silent --show-error \
+        --request PUT --dump-header "$response_headers" --output "$response_body" \
+        --header 'Content-Length: 0' \
+        --header "Content-Range: bytes */$media_size" \
+        "$session_uri" || return 1
+    parse_response_status
+    case $response_status in
+        200|201)
+            provider_response=$(cat -- "$response_body")
+            receipt_status=complete
+            next_offset=$media_size
+            fetch_final_metadata
+            return 0
+            ;;
+        308)
+            parse_acknowledged_range
+            next_offset=$acknowledged_bytes
+            write_session_record "$session_uri"
+            return 0
+            ;;
+        404|410) fail 'Google Drive resumable upload session expired or is dead' ;;
+        *) fail "Google Drive resumable status query returned HTTP $response_status" ;;
+    esac
+}
+
+send_upload_chunk() {
+    chunk_start=$1
+    chunk_end=$2
+    chunk_length=$3
+    chunk_file=$temporary/upload-chunk
+    run_source_range "$chunk_start" "$chunk_length" "$chunk_file" ||
+        fail 'source producer failed or returned a short range'
+    response_headers=$temporary/upload.headers
+    response_body=$temporary/upload.body
+    : > "$response_headers"
+    : > "$response_body"
+    if ! curl --config "$curl_config" --silent --show-error \
+        --request PUT --dump-header "$response_headers" --output "$response_body" \
+        --header "Content-Type: $media_type" \
+        --header "Content-Length: $chunk_length" \
+        --header "Content-Range: bytes $chunk_start-$chunk_end/$media_size" \
+        --data-binary "@$chunk_file" "$session_uri"; then
+        status_query || fail 'Drive upload response was lost and status query failed'
+        return 0
+    fi
+    parse_response_status
+    case $response_status in
+        200|201)
+            provider_response=$(cat -- "$response_body")
+            next_offset=$media_size
+            receipt_status=complete
+            fetch_final_metadata
+            ;;
+        308)
+            parse_acknowledged_range
+            run_upload_state bounds "$acknowledged_bytes" "$chunk_start" "$chunk_end" >/dev/null
+            next_offset=$acknowledged_bytes
+            write_session_record "$session_uri"
+            ;;
+        404|410) fail 'Google Drive resumable upload session expired or is dead' ;;
+        *) fail "Google Drive resumable upload returned HTTP $response_status" ;
+    esac
 }
 
 request_resumable_upload() {
@@ -379,34 +677,92 @@ request_resumable_upload() {
         fail "$requested_method does not advertise media upload in the pinned discovery document"
 
     [ -n "$session_file" ] ||
-        fail '--session-file is required with --media so resumable state survives failure'
-
-    [ -f "$media_file" ] || fail "media file not found: $media_file"
-    media_size=$(wc -c < "$media_file" | tr -d '[:space:]')
-    [ -n "$media_size" ] || fail "could not determine media size: $media_file"
-
-    if read_session_uri; then
-        :
+        fail '--session-file is required with --media or --source-program'
+    if [ -n "$media_file" ]; then
+        [ -f "$media_file" ] || fail "media file not found: $media_file"
+        media_size=$(wc -c < "$media_file" | tr -d '[:space:]')
+        [ -n "$media_size" ] || fail "could not determine media size: $media_file"
+        if [ -z "$source_program" ]; then
+            if read_session_uri; then
+                :
+            else
+                next_offset=0
+                start_resumable_session
+            fi
+            if curl --config "$curl_config" --fail --silent --show-error \
+                --request PUT \
+                --header "Content-Type: $media_type" \
+                --header "Content-Length: $media_size" \
+                --data-binary "@$media_file" "$session_uri"; then
+                rm -f -- "$session_file"
+                return 0
+            fi
+            printf 'resumable session retained at %s\n' "$session_file" >&2
+            exit 1
+        fi
     else
+        validate_decimal media_size "$media_size"
+        [ -n "$source_program" ] || fail 'source program is missing'
+        [ -x "$source_program" ] || [ -n "${GOOGLE_DRIVE_SOURCE_RUNNER:-}" ] ||
+        command -v "$source_program" >/dev/null 2>&1 ||
+            fail "source producer not found: $source_program"
+    fi
+    validate_decimal media_size "$media_size"
+    [ "$chunk_size" != 0 ] || fail 'chunk size must be positive'
+    if [ -n "$receipt_file" ] && [ -f "$receipt_file" ]; then
+        stored_receipt_status=$(jq -r '.status // empty' "$receipt_file")
+        stored_receipt_method=$(jq -r '.method // empty' "$receipt_file")
+        stored_receipt_total=$(jq -r '.total_bytes // empty' "$receipt_file")
+        stored_receipt_source=$(jq -r '.source_program // empty' "$receipt_file")
+        if [ "$stored_receipt_status" = complete ] &&
+           [ "$stored_receipt_method" = "$requested_method" ] &&
+           [ "$stored_receipt_total" = "$media_size" ] &&
+           [ "$stored_receipt_source" = "$source_program" ]; then
+            stored_provider=$(jq -c '.provider // empty' "$receipt_file")
+            [ -n "$stored_provider" ] && [ "$stored_provider" != null ] ||
+                fail 'completed upload receipt has no provider metadata'
+            printf '%s\n' "$stored_provider"
+            return 0
+        fi
+    fi
+    chunk_plan=$(run_upload_state plan "$media_size" 0 "$chunk_size")
+    case $chunk_plan in complete) ;; esac
+    if read_session_uri; then
+        [ -n "$source_sha256" ] || {
+            hash_source
+            write_session_record "$session_uri"
+        }
+        status_query || fail 'could not query existing Drive resumable session'
+    else
+        hash_source
         start_resumable_session
     fi
 
-    if curl \
-        --config "$curl_config" \
-        --fail \
-        --silent \
-        --show-error \
-        --request PUT \
-        --header "Content-Type: $media_type" \
-        --header "Content-Length: $media_size" \
-        --data-binary "@$media_file" \
-        "$session_uri"
-    then
-        rm -f -- "$session_file"
+    if [ "$media_size" = 0 ]; then
+        response_headers=$temporary/zero.headers
+        response_body=$temporary/zero.body
+        curl --config "$curl_config" --silent --show-error \
+            --request PUT --dump-header "$response_headers" --output "$response_body" \
+            --header 'Content-Length: 0' --header 'Content-Range: bytes */0' \
+            "$session_uri" || { status_query || fail 'zero-byte upload response was lost'; }
+        if [ -z "${receipt_status:-}" ]; then
+            parse_response_status
+            [ "$response_status" = 200 ] || [ "$response_status" = 201 ] ||
+                fail "zero-byte upload returned HTTP $response_status"
+            provider_response=$(cat -- "$response_body")
+            receipt_status=complete
+            fetch_final_metadata
+        fi
     else
-        printf 'resumable session retained at %s\n' "$session_file" >&2
-        exit 1
+        while [ "$next_offset" != "$media_size" ]; do
+            chunk_plan=$(run_upload_state plan "$media_size" "$next_offset" "$chunk_size")
+            set -- $chunk_plan
+            send_upload_chunk "$2" "$3" "$4"
+        done
     fi
+    printf '%s\n' "$provider_response"
+    write_receipt
+    rm -f -- "$session_file"
 }
 
 case ${1:-} in
@@ -436,8 +792,13 @@ load_method
 query_string=
 body_file=
 media_file=
+source_program=
+media_size=
+source_sha256=
 media_type=application/octet-stream
 session_file=
+receipt_file=
+chunk_size=$default_chunk_size
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -461,14 +822,34 @@ while [ "$#" -gt 0 ]; do
             media_file=$2
             shift 2
             ;;
+        --source-program)
+            [ "$#" -ge 2 ] || fail '--source-program needs PROGRAM'
+            source_program=$2
+            shift 2
+            ;;
+        --media-size)
+            [ "$#" -ge 2 ] || fail '--media-size needs BYTES'
+            media_size=$2
+            shift 2
+            ;;
         --media-type)
             [ "$#" -ge 2 ] || fail '--media-type needs MIME_TYPE'
             media_type=$2
             shift 2
             ;;
+        --chunk-size)
+            [ "$#" -ge 2 ] || fail '--chunk-size needs BYTES'
+            chunk_size=$2
+            shift 2
+            ;;
         --session-file)
             [ "$#" -ge 2 ] || fail '--session-file needs FILE'
             session_file=$2
+            shift 2
+            ;;
+        --receipt-file)
+            [ "$#" -ge 2 ] || fail '--receipt-file needs FILE'
+            receipt_file=$2
             shift 2
             ;;
         -h|--help)
@@ -491,9 +872,27 @@ if [ -n "$body_file" ] && [ "$body_file" != - ] && [ ! -f "$body_file" ]; then
     fail "JSON body file not found: $body_file"
 fi
 
+if [ -n "$media_file" ] && [ -n "$source_program" ]; then
+    fail '--media and --source-program are mutually exclusive'
+fi
+if [ -n "$source_program" ] && [ -z "$media_size" ]; then
+    fail '--media-size is required with --source-program'
+fi
+if [ -n "$media_file" ] && [ -n "$media_size" ]; then
+    fail '--media-size is only valid with --source-program'
+fi
+if [ -n "$source_program" ]; then
+    validate_decimal chunk_size "$chunk_size"
+    case $chunk_size in
+        0) fail 'chunk size must be positive' ;;
+    esac
+    chunk_remainder=$(run_upload_state source-plan "$chunk_size" 1 "$source_block_size" | awk -F '\t' '{print $2}')
+    [ "$chunk_remainder" = 0 ] || fail 'chunk size must be a multiple of 256 KiB'
+fi
+
 prepare_curl
 
-if [ -n "$media_file" ]; then
+if [ -n "$media_file" ] || [ -n "$source_program" ]; then
     request_resumable_upload
 else
     request_regular

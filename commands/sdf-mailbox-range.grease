@@ -1,0 +1,68 @@
+#!/usr/bin/env grease
+set -eu
+LC_ALL=C
+export LC_ALL
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+upload_state=${GOOGLE_DRIVE_UPLOAD_STATE:-$script_directory/google-drive-upload-state}
+target=${SDF_MAILBOX_TARGET:-isomorphisms@tty.sdf.org}
+source_path=${SDF_MAILBOX_PATH:-/var/mail/isomorphisms}
+source_device=${SDF_MAILBOX_DEVICE:?SDF_MAILBOX_DEVICE is required}
+source_inode=${SDF_MAILBOX_INODE:?SDF_MAILBOX_INODE is required}
+source_total=${GOOGLE_DRIVE_SOURCE_TOTAL:?GOOGLE_DRIVE_SOURCE_TOTAL is required}
+source_offset=${GOOGLE_DRIVE_SOURCE_OFFSET:?GOOGLE_DRIVE_SOURCE_OFFSET is required}
+source_length=${GOOGLE_DRIVE_SOURCE_LENGTH:?GOOGLE_DRIVE_SOURCE_LENGTH is required}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 2
+}
+
+validate_decimal() {
+    value=$2
+    case $value in
+        ''|*[!0-9]*) fail "$1 must be an unsigned decimal integer" ;;
+    esac
+}
+
+case $source_path in
+    ''|*[!A-Za-z0-9_./-]*) fail 'SDF mailbox path contains unsupported bytes' ;;
+esac
+validate_decimal source_total "$source_total"
+validate_decimal source_offset "$source_offset"
+validate_decimal source_length "$source_length"
+[ -x "$upload_state" ] || command -v "$upload_state" >/dev/null 2>&1 ||
+    fail "google-drive-upload-state helper not found: $upload_state"
+ssh -o BatchMode=yes "$target" test -f "$source_path" ||
+    fail 'SDF mailbox source is not a regular file'
+
+stat_text=$(ssh -o BatchMode=yes "$target" stat -f '%d %i %z' "$source_path") ||
+    fail 'SDF source stat failed; batch SSH authentication or the source path is unavailable'
+set -- $stat_text
+[ "$#" = 3 ] || fail 'SDF source stat did not return device, inode, and size'
+current_device=$1
+current_inode=$2
+current_size=$3
+validate_decimal current_device "$current_device"
+validate_decimal current_inode "$current_inode"
+validate_decimal current_size "$current_size"
+[ "$current_device" = "$source_device" ] ||
+    fail 'SDF mailbox was replaced: device identity changed'
+[ "$current_inode" = "$source_inode" ] ||
+    fail 'SDF mailbox was replaced: inode identity changed'
+"$upload_state" bounds "$source_total" "$source_offset" "$source_total" >/dev/null ||
+    fail 'SDF source offset is outside the fixed archival generation'
+[ "$current_size" = "$source_total" ] ||
+    "$upload_state" bounds "$current_size" "$source_total" "$current_size" >/dev/null 2>&1 ||
+    fail 'SDF mailbox became shorter than the captured archival generation'
+
+source_plan=$("$upload_state" source-plan "$source_offset" "$source_length" 262144)
+set -- $source_plan
+block_start=$1
+within_block=$2
+block_count=$3
+
+# The first dd reads whole 256 KiB blocks; the second dd discards the leading
+# bytes and emits only the requested interval. Both commands are binary-safe.
+remote_command="dd if='$source_path' bs=262144 skip=$block_start count=$block_count 2>/dev/null | dd bs=1 skip=$within_block count=$source_length 2>/dev/null"
+ssh -o BatchMode=yes "$target" "$remote_command"

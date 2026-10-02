@@ -1,0 +1,232 @@
+#!/usr/bin/env grease
+set -eu
+LC_ALL=C
+export LC_ALL
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+api_command=${GOOGLE_DRIVE_API:-$script_directory/google-drive-api.grease}
+range_program=$script_directory/sdf-mailbox-range.grease
+upload_state=${GOOGLE_DRIVE_UPLOAD_STATE:-$script_directory/google-drive-upload-state}
+runner=${GREASE:-grease}
+target=isomorphisms@tty.sdf.org
+source_path=/var/mail/isomorphisms
+drive_name=sdf-mailbox-archive
+parent_id=
+session_file=
+receipt_file=
+chunk_size=67108864
+
+usage() {
+    cat <<'EOF'
+usage:
+  sdf-mailbox-stream-upload [OPTIONS]
+
+Options:
+  --target SSH_TARGET          Default: isomorphisms@tty.sdf.org
+  --source-path PATH           Default: /var/mail/isomorphisms
+  --name DRIVE_NAME            Default: sdf-mailbox-archive
+  --parent-id DRIVE_FOLDER_ID  Optional Drive parent folder
+  --session-file FILE          Required durable resumable-session record
+  --receipt-file FILE          Required final archival receipt
+  --chunk-size BYTES           Multiple of 256 KiB; default 64 MiB
+
+The command captures the remote regular-file length and device/inode identity,
+then transfers exactly bytes [0,T) through the system OpenSSH client. It never
+parses or rewrites mailbox content.
+EOF
+}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 2
+}
+
+validate_decimal() {
+    case $2 in
+        ''|*[!0-9]*) fail "$1 must be an unsigned decimal integer" ;;
+    esac
+}
+
+read_source_stat() {
+    case $source_path in
+        ''|*[!A-Za-z0-9_./-]*) fail 'SDF mailbox path contains unsupported bytes' ;;
+    esac
+    ssh -o BatchMode=yes "$target" test -f "$source_path" ||
+        fail 'SDF mailbox source is not a regular file'
+    stat_text=$(ssh -o BatchMode=yes "$target" stat -f '%d %i %z' "$source_path") ||
+        fail 'SDF source stat failed; batch SSH authentication or the source path is unavailable'
+    set -- $stat_text
+    [ "$#" = 3 ] || fail 'SDF source stat did not return device, inode, and size'
+    source_device=$1
+    source_inode=$2
+    source_size=$3
+    validate_decimal source_device "$source_device"
+    validate_decimal source_inode "$source_inode"
+    validate_decimal source_size "$source_size"
+}
+
+read_current_source_stat() {
+    ssh -o BatchMode=yes "$target" test -f "$source_path" ||
+        fail 'SDF mailbox source is no longer a regular file'
+    stat_text=$(ssh -o BatchMode=yes "$target" stat -f '%d %i %z' "$source_path") ||
+        fail 'SDF source stat failed while resuming the fixed archival generation'
+    set -- $stat_text
+    [ "$#" = 3 ] || fail 'SDF source stat did not return device, inode, and size'
+    current_device=$1
+    current_inode=$2
+    current_size=$3
+    validate_decimal current_device "$current_device"
+    validate_decimal current_inode "$current_inode"
+    validate_decimal current_size "$current_size"
+    [ "$current_device" = "$source_device" ] ||
+        fail 'SDF mailbox was replaced: device identity changed'
+    [ "$current_inode" = "$source_inode" ] ||
+        fail 'SDF mailbox was replaced: inode identity changed'
+    [ "$current_size" = "$source_size" ] ||
+        "$upload_state" bounds "$current_size" "$source_size" "$current_size" >/dev/null 2>&1 ||
+            fail 'SDF mailbox became shorter than the captured archival generation'
+}
+
+write_initial_receipt() {
+    receipt_directory=$(dirname -- "$receipt_file")
+    mkdir -p "$receipt_directory"
+    receipt_temporary=$receipt_file.tmp.$$
+    jq -cn \
+        --arg status incomplete \
+        --arg target "$target" \
+        --arg source_path "$source_path" \
+        --arg source_device "$source_device" \
+        --arg source_inode "$source_inode" \
+        --arg total "$source_size" \
+        --arg started_at "$archival_started_at" \
+        --arg session_file "$session_file" \
+        --arg chunk_size "$chunk_size" \
+        '{kind:"sdf-mailbox-archive-receipt",status:$status,
+          source:{ssh_target:$target,path:$source_path,device:$source_device,
+                  inode:$source_inode,total_bytes:($total|tonumber),
+                  archival_started_at:$started_at},
+          drive:{session_file:$session_file,chunk_size:($chunk_size|tonumber)}}' \
+        > "$receipt_temporary"
+    chmod 600 "$receipt_temporary"
+    mv -f -- "$receipt_temporary" "$receipt_file"
+}
+
+finalize_receipt() {
+    provider=$1
+    source_sha256=$(jq -r '.source_sha256 // empty' "$generic_receipt")
+    acknowledged=$(jq -r '.acknowledged_bytes // empty' "$generic_receipt")
+    provider_id=$(printf '%s' "$provider" | jq -r '.id // empty')
+    provider_name=$(printf '%s' "$provider" | jq -r '.name // empty')
+    provider_size=$(printf '%s' "$provider" | jq -r '.size // empty')
+    provider_sha256=$(printf '%s' "$provider" | jq -r '.sha256Checksum // empty')
+    receipt_temporary=$receipt_file.tmp.$$
+    jq -cn \
+        --arg status COMPLETE_AND_VERIFIED \
+        --arg target "$target" \
+        --arg source_path "$source_path" \
+        --arg source_device "$source_device" \
+        --arg source_inode "$source_inode" \
+        --arg total "$source_size" \
+        --arg started_at "$archival_started_at" \
+        --arg session_file "$session_file" \
+        --arg chunk_size "$chunk_size" \
+        --arg source_sha256 "$source_sha256" \
+        --arg acknowledged "$acknowledged" \
+        --arg object_id "$provider_id" \
+        --arg object_name "$provider_name" \
+        --arg destination_size "$provider_size" \
+        --arg provider_sha256 "$provider_sha256" \
+        --argjson provider "$provider" \
+        '{kind:"sdf-mailbox-archive-receipt",status:$status,
+          source:{ssh_target:$target,path:$source_path,device:$source_device,
+                  inode:$source_inode,total_bytes:($total|tonumber),
+                  archival_started_at:$started_at,sha256:$source_sha256},
+          drive:{session_file:$session_file,chunk_size:($chunk_size|tonumber),
+                 acknowledged_bytes:($acknowledged|tonumber),object_id:$object_id,
+                 object_name:$object_name,destination_size:($destination_size|tonumber),
+                 provider_sha256:(if $provider_sha256=="" then null else $provider_sha256 end),
+                 metadata:$provider},
+          verification:{source_sha256_compared_to_provider_sha256:($provider_sha256!=""),
+                        byte_count_compared:($destination_size==$total)}}' \
+        > "$receipt_temporary"
+    chmod 600 "$receipt_temporary"
+    mv -f -- "$receipt_temporary" "$receipt_file"
+}
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --target) [ "$#" -ge 2 ] || fail '--target needs SSH_TARGET'; target=$2; shift 2 ;;
+        --source-path) [ "$#" -ge 2 ] || fail '--source-path needs PATH'; source_path=$2; shift 2 ;;
+        --name) [ "$#" -ge 2 ] || fail '--name needs DRIVE_NAME'; drive_name=$2; shift 2 ;;
+        --parent-id) [ "$#" -ge 2 ] || fail '--parent-id needs DRIVE_FOLDER_ID'; parent_id=$2; shift 2 ;;
+        --session-file) [ "$#" -ge 2 ] || fail '--session-file needs FILE'; session_file=$2; shift 2 ;;
+        --receipt-file) [ "$#" -ge 2 ] || fail '--receipt-file needs FILE'; receipt_file=$2; shift 2 ;;
+        --chunk-size) [ "$#" -ge 2 ] || fail '--chunk-size needs BYTES'; chunk_size=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unknown option: $1" ;;
+    esac
+done
+
+[ -n "$session_file" ] || fail '--session-file is required'
+[ -n "$receipt_file" ] || fail '--receipt-file is required'
+validate_decimal chunk_size "$chunk_size"
+if [ -f "$receipt_file" ]; then
+    prior_status=$(jq -r '.status // empty' "$receipt_file")
+    if [ "$prior_status" = COMPLETE_AND_VERIFIED ]; then
+        cat -- "$receipt_file"
+        exit 0
+    fi
+    prior_target=$(jq -r '.source.ssh_target // empty' "$receipt_file")
+    prior_path=$(jq -r '.source.path // empty' "$receipt_file")
+    [ "$prior_target" = "$target" ] || fail 'receipt belongs to another SDF SSH target'
+    [ "$prior_path" = "$source_path" ] || fail 'receipt belongs to another SDF source path'
+    source_device=$(jq -r '.source.device // empty' "$receipt_file")
+    source_inode=$(jq -r '.source.inode // empty' "$receipt_file")
+    source_size=$(jq -r '.source.total_bytes // empty' "$receipt_file")
+    archival_started_at=$(jq -r '.source.archival_started_at // empty' "$receipt_file")
+    validate_decimal source_device "$source_device"
+    validate_decimal source_inode "$source_inode"
+    validate_decimal source_size "$source_size"
+    [ -n "$archival_started_at" ] || fail 'incomplete receipt has no archival start time'
+    read_current_source_stat
+else
+    [ ! -e "$session_file" ] || fail 'session exists without its required archival receipt'
+    read_source_stat
+    archival_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+fi
+write_initial_receipt
+
+metadata_file=${TMPDIR:-/tmp}/sdf-mailbox-metadata.$$
+generic_receipt=${TMPDIR:-/tmp}/sdf-mailbox-upload.$$.receipt
+temporary_cleanup() {
+    rm -f -- "$metadata_file" "$generic_receipt"
+}
+trap temporary_cleanup EXIT HUP INT TERM
+umask 077
+if [ -n "$parent_id" ]; then
+    jq -cn --arg name "$drive_name" --arg parent "$parent_id" \
+        '{name:$name,parents:[$parent]}' > "$metadata_file"
+else
+    jq -cn --arg name "$drive_name" '{name:$name}' > "$metadata_file"
+fi
+
+set +e
+provider_response=$(
+    SDF_MAILBOX_TARGET=$target \
+    SDF_MAILBOX_PATH=$source_path \
+    SDF_MAILBOX_DEVICE=$source_device \
+    SDF_MAILBOX_INODE=$source_inode \
+    GOOGLE_DRIVE_SOURCE_RUNNER=$runner \
+    "$runner" "$api_command" files.create \
+        --body "$metadata_file" \
+        --source-program "$range_program" \
+        --media-size "$source_size" \
+        --chunk-size "$chunk_size" \
+        --session-file "$session_file" \
+        --receipt-file "$generic_receipt"
+)
+provider_status=$?
+set -e
+[ "$provider_status" = 0 ] || fail 'SDF mailbox upload is incomplete; the durable session and receipt remain'
+finalize_receipt "$provider_response"
+printf '%s\n' "$provider_response"

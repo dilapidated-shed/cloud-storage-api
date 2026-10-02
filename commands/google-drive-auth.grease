@@ -41,10 +41,10 @@ usage() {
     cat <<'USAGE'
 usage:
   google-drive-auth init CLIENT_JSON CREDENTIAL_FILE [--create-parent]
-  google-drive-auth authorize CREDENTIAL_FILE [--copy-tree] [--no-open] [--timeout SECONDS]
+  google-drive-auth authorize CREDENTIAL_FILE [--copy-tree|--stream-upload] [--no-open] [--timeout SECONDS]
   google-drive-auth init-android WEB_CLIENT_JSON CREDENTIAL_FILE [--create-parent]
-  google-drive-auth authorize-android CREDENTIAL_FILE [--copy-tree] [--no-open] [--timeout SECONDS]
-  google-drive-auth begin CREDENTIAL_FILE REDIRECT_URI [--copy-tree]
+  google-drive-auth authorize-android CREDENTIAL_FILE [--copy-tree|--stream-upload] [--no-open] [--timeout SECONDS]
+  google-drive-auth begin CREDENTIAL_FILE REDIRECT_URI [--copy-tree|--stream-upload]
   google-drive-auth complete CREDENTIAL_FILE < CALLBACK_URL
   google-drive-auth curl-config CREDENTIAL_FILE OUTPUT [--force-refresh]
   google-drive-auth status CREDENTIAL_FILE
@@ -70,9 +70,10 @@ By default both paths request only:
 
   https://www.googleapis.com/auth/drive.readonly
 
---copy-tree additionally requests drive.file. The resulting credential can read
-accessible source files and create/reconcile the independent copies made by the
-copy-tree command without requesting the broad drive scope.
+--copy-tree and --stream-upload additionally request drive.file. The resulting
+credential can read accessible source files and create either independent
+server-side copies or new streamed archive files without requesting the broad
+drive scope.
 
 For a remote/headless shell, begin writes a pending request and prints an
 authorization URL for an explicit loopback REDIRECT_URI. After the browser
@@ -627,7 +628,7 @@ command_begin() {
     authorization_scope=$readonly_scope
     while [ "$#" -gt 0 ]; do
         case $1 in
-            --copy-tree) authorization_scope=$copy_tree_scope; shift ;;
+            --copy-tree|--stream-upload) authorization_scope=$copy_tree_scope; shift ;;
             *) fail "unknown begin option: $1" ;;
         esac
     done
@@ -657,7 +658,7 @@ command_authorize() {
     authorization_scope=$readonly_scope
     while [ "$#" -gt 0 ]; do
         case $1 in
-            --copy-tree) authorization_scope=$copy_tree_scope; shift ;;
+            --copy-tree|--stream-upload) authorization_scope=$copy_tree_scope; shift ;;
             --no-open) no_open=yes; shift ;;
             --timeout)
                 [ "$#" -ge 2 ] || fail '--timeout needs seconds'
@@ -739,7 +740,7 @@ command_authorize_android() {
     authorization_scope=$readonly_scope
     while [ "$#" -gt 0 ]; do
         case $1 in
-            --copy-tree) authorization_scope=$copy_tree_scope; shift ;;
+            --copy-tree|--stream-upload) authorization_scope=$copy_tree_scope; shift ;;
             --no-open) no_open=yes; shift ;;
             --timeout)
                 [ "$#" -ge 2 ] || fail '--timeout needs seconds'

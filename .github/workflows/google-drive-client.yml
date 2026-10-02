@@ -6,6 +6,9 @@ on:
       - AGENTS.md
       - README.md
       - commands/google-drive-api.grease
+      - commands/google-drive-upload-state.c
+      - commands/sdf-mailbox-range.grease
+      - commands/sdf-mailbox-stream-upload.grease
       - commands/google-drive-auth.grease
       - commands/google-drive-authorization-handoff.grease
       - commands/google-drive-copy-tree.grease
@@ -14,7 +17,10 @@ on:
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
       - docs/google-drive-auth-download.md
+      - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
+      - tests/google-drive-upload-stream.sh
+      - tests/sdf-mailbox-stream-upload.sh
       - tests/google-drive-copy-tree.sh
       - tests/google-drive-download.sh
       - tests/live-takeout-extract.sh
@@ -26,6 +32,9 @@ on:
       - AGENTS.md
       - README.md
       - commands/google-drive-api.grease
+      - commands/google-drive-upload-state.c
+      - commands/sdf-mailbox-range.grease
+      - commands/sdf-mailbox-stream-upload.grease
       - commands/google-drive-auth.grease
       - commands/google-drive-authorization-handoff.grease
       - commands/google-drive-copy-tree.grease
@@ -34,7 +43,10 @@ on:
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
       - docs/google-drive-auth-download.md
+      - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
+      - tests/google-drive-upload-stream.sh
+      - tests/sdf-mailbox-stream-upload.sh
       - tests/google-drive-copy-tree.sh
       - tests/google-drive-download.sh
       - tests/live-takeout-extract.sh
@@ -52,6 +64,41 @@ env:
   GREASE_SOURCE_REVISION: 8052868773077602266d80bf39aad6998e2da749
 
 jobs:
+  armv7-upload-state-artifact:
+    name: ARMv7 upload-state helper
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out cloud storage commands
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install ARMv7 cross compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes gcc-arm-linux-gnueabihf
+
+      - name: Build and identify helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _/armv7
+          arm-linux-gnueabihf-gcc \
+            -std=c99 -Wall -Wextra -Werror -O2 -static \
+            commands/google-drive-upload-state.c \
+            -o _/armv7/google-drive-upload-state
+          file _/armv7/google-drive-upload-state
+          sha256sum _/armv7/google-drive-upload-state \
+            | tee _/armv7/google-drive-upload-state.sha256
+
+      - name: Publish ARMv7 helper artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-drive-upload-state-armv7
+          path: _/armv7/
+          if-no-files-found: error
+
   oauth-and-restartable-download:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -83,6 +130,9 @@ jobs:
           cc -std=c99 -Wall -Wextra -Werror -O2 \
             commands/google-drive-download-state.c \
             -o _/test-bin/google-drive-download-state
+          cc -std=c99 -Wall -Wextra -Werror -O2 \
+            commands/google-drive-upload-state.c \
+            -o _/test-bin/google-drive-upload-state
           (cd grease-source && build/py.sh minimal)
           grease-source/bin/osh -c 'echo grease-runtime-ready'
 
@@ -116,9 +166,12 @@ jobs:
           export GREASE="$PWD/grease-source/bin/osh"
           export GOOGLE_OAUTH_LOOPBACK="$PWD/_/test-bin/google-oauth-loopback"
           export GOOGLE_DRIVE_DOWNLOAD_STATE="$PWD/_/test-bin/google-drive-download-state"
+          export GOOGLE_DRIVE_UPLOAD_STATE="$PWD/_/test-bin/google-drive-upload-state"
           sh tests/google-drive-auth.sh
           sh tests/google-drive-copy-tree.sh
           sh tests/google-drive-download.sh
+          sh tests/sdf-mailbox-stream-upload.sh
+          sh tests/google-drive-upload-stream.sh
 
       - name: State evidence boundary
         shell: sh
