@@ -16,6 +16,8 @@ on:
       - commands/google-drive-files.grease
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
+      - build/android-client.grease
+      - docs/android-client-build.md
       - docs/google-drive-auth-download.md
       - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
@@ -42,6 +44,8 @@ on:
       - commands/google-drive-files.grease
       - commands/google-drive-download-state.c
       - commands/google-oauth-loopback.c
+      - build/android-client.grease
+      - docs/android-client-build.md
       - docs/google-drive-auth-download.md
       - docs/sdf-mailbox-stream-upload.md
       - tests/google-drive-auth.sh
@@ -64,39 +68,46 @@ env:
   GREASE_SOURCE_REVISION: 8052868773077602266d80bf39aad6998e2da749
 
 jobs:
-  armv7-upload-state-artifact:
-    name: ARMv7 upload-state helper
+  android-client-artifact:
+    name: Android Bionic client (${{ matrix.abi }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        abi: [armeabi-v7a, arm64-v8a]
     steps:
       - name: Check out cloud storage commands
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Install ARMv7 cross compiler
-        shell: bash
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check out exact Grease source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/oils
+          ref: ${{ env.GREASE_SOURCE_REVISION }}
+          path: grease-source
+          persist-credentials: false
+      - name: Acquire pinned host NDK
+        shell: sh
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes gcc-arm-linux-gnueabihf
-
-      - name: Build and identify helper
-        shell: bash
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;27.2.12479018'
+      - name: Build exact Grease in the existing Python 2 build container
+        shell: sh
         run: |
-          set -euo pipefail
-          mkdir -p _/armv7
-          arm-linux-gnueabihf-gcc \
-            -std=c99 -Wall -Wextra -Werror -O2 -static \
-            commands/google-drive-upload-state.c \
-            -o _/armv7/google-drive-upload-state
-          file _/armv7/google-drive-upload-state
-          sha256sum _/armv7/google-drive-upload-state \
-            | tee _/armv7/google-drive-upload-state.sha256
-
-      - name: Publish ARMv7 helper artifact
+          docker run --rm -v "$PWD:/source" -w /source/grease-source \
+            python:2.7.18-buster@sha256:c934af72b8bd03b9804d5bde2569c320926e70392d708d113a2e71bcf98c8a20 \
+            sh build/py.sh minimal
+      - name: Produce Android client bundle through Grease
+        shell: sh
+        run: |
+          docker run --rm -v "$PWD:/source" -v "$ANDROID_HOME/ndk/27.2.12479018:/ndk:ro" -w /source \
+            python:2.7.18-buster@sha256:c934af72b8bd03b9804d5bde2569c320926e70392d708d113a2e71bcf98c8a20 \
+            grease-source/bin/osh build/android-client.grease /ndk '${{ matrix.abi }}' '/source/_/android-${{ matrix.abi }}'
+      - name: Publish Android bundle and build-only receipt
         uses: actions/upload-artifact@v4
         with:
-          name: google-drive-upload-state-armv7
-          path: _/armv7/
+          name: google-drive-client-android-${{ matrix.abi }}
+          path: _/android-${{ matrix.abi }}/
           if-no-files-found: error
 
   oauth-and-restartable-download:
@@ -107,6 +118,8 @@ jobs:
     steps:
       - name: Check out cloud storage commands
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check out exact Grease source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -191,6 +204,7 @@ jobs:
       - name: Check out live probe source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Validate live credential inputs

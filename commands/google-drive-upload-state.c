@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static void die(const char *message) {
     fprintf(stderr, "%s\n", message);
@@ -133,6 +135,27 @@ static void command_size(int argc, char **argv) {
     printf("%llu\n", (unsigned long long)(uint64_t)status.st_size);
 }
 
+/* Commit a private sidecar after its bytes, then its containing directory,
+ * have been synchronized. The caller writes the temporary beside DEST. */
+static void command_commit(int argc, char **argv) {
+    if (argc != 4) die("usage: google-drive-upload-state commit TEMP DEST");
+    char *parent = strdup(argv[3]);
+    if (!parent) die("out of memory");
+    char *slash = strrchr(parent, '/');
+    if (!slash) strcpy(parent, ".");
+    else if (slash == parent) slash[1] = '\0';
+    else *slash = '\0';
+    int directory = open(parent, O_RDONLY);
+    if (directory < 0) die("cannot open sidecar directory");
+    int file = open(argv[2], O_RDONLY);
+    if (file < 0 || fsync(file) != 0) die("cannot synchronize sidecar bytes");
+    if (close(file) != 0 || rename(argv[2], argv[3]) != 0)
+        die("cannot publish sidecar");
+    if (fsync(directory) != 0 || close(directory) != 0)
+        die("cannot synchronize sidecar directory");
+    free(parent);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2)
         die("usage: google-drive-upload-state plan|next|ack|bounds|source-plan|size ...");
@@ -142,6 +165,7 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[1], "bounds") == 0) command_bounds(argc, argv);
     else if (strcmp(argv[1], "source-plan") == 0) command_source_plan(argc, argv);
     else if (strcmp(argv[1], "size") == 0) command_size(argc, argv);
+    else if (strcmp(argv[1], "commit") == 0) command_commit(argc, argv);
     else die("unknown google-drive-upload-state action");
     return 0;
 }

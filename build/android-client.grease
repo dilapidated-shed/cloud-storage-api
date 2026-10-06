@@ -1,0 +1,44 @@
+#!/usr/bin/env grease
+set -eu
+umask 022
+fail() { printf 'Android client build: %s\n' "$*" >&2; exit 2; }
+test "$#" = 3 || fail 'usage: android-client NDK_ROOT armeabi-v7a|arm64-v8a OUTPUT_DIRECTORY'
+ndk=$1
+abi=$2
+output=$3
+case $ndk in /*) ;; *) fail 'NDK root must be absolute' ;; esac
+case $output in /*) ;; *) fail 'output must be absolute' ;; esac
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+test -z "$(git -C "$root" status --porcelain --untracked-files=no)" || fail 'tracked source is dirty'
+grep -Fx 'Pkg.Revision = 27.2.12479018' "$ndk/source.properties" >/dev/null || fail 'NDK r27c required'
+case $abi in
+  armeabi-v7a) target=armv7a-linux-androideabi21; machine='ARM' ;;
+  arm64-v8a) target=aarch64-linux-android21; machine='AArch64' ;;
+  *) fail 'unsupported ABI' ;;
+esac
+tools=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin
+test -x "$tools/clang" && test -x "$tools/llvm-readelf" && test -x "$tools/llvm-strip" || fail 'host NDK tools missing'
+if test -e "$output" || test -L "$output"; then fail 'output already exists'; fi
+temporary=$output.tmp.$$
+test ! -e "$temporary" || fail 'temporary output exists'
+mkdir -p "$temporary/commands"
+trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+for name in google-oauth-loopback google-drive-download-state google-drive-upload-state zip-central-directory; do
+  "$tools/clang" --target="$target" -std=c99 -Wall -Wextra -Werror -O2 \
+    -fPIE -pie -Wl,-z,max-page-size=16384 "$root/commands/$name.c" \
+    -o "$temporary/commands/$name"
+  "$tools/llvm-strip" "$temporary/commands/$name"
+  "$tools/llvm-readelf" -h "$temporary/commands/$name" | grep -E "Machine: *$machine$" >/dev/null
+  "$tools/llvm-readelf" -l "$temporary/commands/$name" | grep -E '/system/bin/linker(64)?]' >/dev/null
+done
+for file in "$root"/commands/*.grease "$root"/commands/google-drive-v3-methods.tsv; do
+  cp "$file" "$temporary/commands/"
+done
+{
+  printf 'source_revision\t%s\nndk_revision\t27.2.12479018\nabi\t%s\nminimum_api\t21\n' "$(git -C "$root" rev-parse HEAD)" "$abi"
+  printf 'build\tPASS\nelf_android_linker\tPASS\ninstalled_runtime\tNOT_RUN\nphysical_device\tNOT_RUN\nlive_drive\tNOT_RUN\n'
+} > "$temporary/build.tsv"
+(cd "$temporary" && sha256sum commands/* > SHA256SUMS)
+mv "$temporary" "$output"
+trap - EXIT HUP INT TERM
+printf 'Android client bundle built: %s\n' "$output"

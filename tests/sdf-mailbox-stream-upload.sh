@@ -43,4 +43,24 @@ run_range exact
 run_range append
 if run_range shorter; then exit 1; fi
 if run_range replaced; then exit 1; fi
+if FAKE_SDF_STATE=exact PATH=$fake_bin:$PATH GOOGLE_DRIVE_UPLOAD_STATE=$helper \
+    SDF_MAILBOX_DEVICE=7 SDF_MAILBOX_INODE=11 GOOGLE_DRIVE_SOURCE_TOTAL=1000000 \
+    GOOGLE_DRIVE_SOURCE_OFFSET=999999 GOOGLE_DRIVE_SOURCE_LENGTH=2 \
+    "$runner" "$producer" >/dev/null 2>&1; then
+    printf '%s\n' 'range past fixed generation unexpectedly passed' >&2
+    exit 1
+fi
+printf '%s\n' secret > "$temporary/sidecar.tmp"
+chmod 600 "$temporary/sidecar.tmp"
+"$helper" commit "$temporary/sidecar.tmp" "$temporary/sidecar"
+[ "$(cat "$temporary/sidecar")" = secret ]
+[ ! -e "$temporary/sidecar.tmp" ]
+if "$helper" commit "$temporary/missing" "$temporary/sidecar" 2>/dev/null; then exit 1; fi
+[ "$(cat "$temporary/sidecar")" = secret ]
+# Replaying a completed receipt must check identity before the shortcut.
+printf '%s\n' '{"status":"COMPLETE_AND_VERIFIED","source":{"ssh_target":"other@sdf.org","path":"/var/mail/other"}}' > "$temporary/complete.receipt"
+if "$runner" "$root/commands/sdf-mailbox-stream-upload.grease" \
+    --session-file "$temporary/upload.session" --receipt-file "$temporary/complete.receipt" \
+    >"$temporary/stdout" 2>"$temporary/stderr"; then exit 1; fi
+grep -F 'another SDF SSH target' "$temporary/stderr" >/dev/null
 printf '%s\n' 'SDF bounded source-generation contract passes'

@@ -31,6 +31,7 @@ esac
 validate_decimal source_total "$source_total"
 validate_decimal source_offset "$source_offset"
 validate_decimal source_length "$source_length"
+case $target in ''|-*|*[!A-Za-z0-9@._-]*) fail 'unsupported SDF SSH target' ;; esac
 [ -x "$upload_state" ] || command -v "$upload_state" >/dev/null 2>&1 ||
     fail "google-drive-upload-state helper not found: $upload_state"
 ssh -o BatchMode=yes "$target" test -f "$source_path" ||
@@ -56,6 +57,10 @@ validate_decimal current_size "$current_size"
     "$upload_state" bounds "$current_size" "$source_total" "$current_size" >/dev/null 2>&1 ||
     fail 'SDF mailbox became shorter than the captured archival generation'
 
+bounded_plan=$("$upload_state" plan "$source_total" "$source_offset" "$source_length")
+set -- $bounded_plan
+[ "$1" = range ] && [ "$4" = "$source_length" ] ||
+    fail 'SDF requested interval exceeds the fixed archival generation'
 source_plan=$("$upload_state" source-plan "$source_offset" "$source_length" 262144)
 set -- $source_plan
 block_start=$1
@@ -66,3 +71,11 @@ block_count=$3
 # bytes and emits only the requested interval. Both commands are binary-safe.
 remote_command="dd if='$source_path' bs=262144 skip=$block_start count=$block_count 2>/dev/null | dd bs=1 skip=$within_block count=$source_length 2>/dev/null"
 ssh -o BatchMode=yes "$target" "$remote_command"
+# Bytes go to the upload client's bounded temporary. A changed identity after
+# reading fails the producer before those bytes may be uploaded.
+after_stat=$(ssh -o BatchMode=yes "$target" stat -f '%d %i %z' "$source_path")
+set -- $after_stat
+[ "$#" = 3 ] && [ "$1" = "$source_device" ] && [ "$2" = "$source_inode" ] ||
+    fail 'SDF mailbox identity changed during range production'
+"$upload_state" bounds "$3" "$source_total" "$3" >/dev/null ||
+    fail 'SDF mailbox became shorter during range production'

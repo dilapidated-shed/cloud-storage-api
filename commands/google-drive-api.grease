@@ -376,7 +376,7 @@ write_session_record() {
         printf 'session_uri=%s\n' "$session_uri"
     } > "$session_temporary"
     chmod 600 "$session_temporary"
-    mv -f -- "$session_temporary" "$session_file"
+    run_upload_state commit "$session_temporary" "$session_file"
 }
 
 read_session_uri() {
@@ -574,7 +574,7 @@ write_receipt() {
           source_sha256:(if $source_sha256=="" then null else $source_sha256 end),
           provider:$provider}' > "$receipt_temporary"
     chmod 600 "$receipt_temporary"
-    mv -f -- "$receipt_temporary" "$receipt_file"
+    run_upload_state commit "$receipt_temporary" "$receipt_file"
 }
 
 fetch_final_metadata() {
@@ -592,6 +592,11 @@ fetch_final_metadata() {
     [ "$provider_size" = "$media_size" ] ||
         fail "final Drive object size is $provider_size; expected $media_size"
     provider_sha256=$(printf '%s' "$provider_response" | jq -r '.sha256Checksum // empty | ascii_downcase')
+    if [ -n "$source_program" ]; then
+        [ -n "$provider_sha256" ] ||
+            fail 'stream upload has no provider SHA-256; exact-byte verification is incomplete'
+        validate_sha256 "$provider_sha256"
+    fi
     if [ -n "$provider_sha256" ] && [ "$provider_sha256" != "$source_sha256" ]; then
         fail 'final Drive sha256Checksum does not match the source SHA-256'
     fi
@@ -721,6 +726,10 @@ request_resumable_upload() {
             stored_provider=$(jq -c '.provider // empty' "$receipt_file")
             [ -n "$stored_provider" ] && [ "$stored_provider" != null ] ||
                 fail 'completed upload receipt has no provider metadata'
+            jq -e '.provider.size == (.total_bytes | tostring) and
+                   .provider.sha256Checksum == .source_sha256 and
+                   (.source_sha256 | test("^[0-9a-f]{64}$"))' "$receipt_file" >/dev/null ||
+                fail 'completed stream receipt lacks exact-byte verification'
             printf '%s\n' "$stored_provider"
             return 0
         fi

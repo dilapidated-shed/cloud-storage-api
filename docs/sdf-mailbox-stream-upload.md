@@ -42,7 +42,22 @@ The final receipt records the source identity and length, archival start time,
 Drive session-file location, object ID/name, destination size, source SHA-256,
 and provider SHA-256 when Drive supplies one. Completion means Drive returned
 completed object metadata, exact destination size matched T, and the SHA-256
-comparison succeeded when a provider SHA-256 was available.
+comparison succeeded. A missing provider SHA-256 leaves the transfer
+unverified and retains the session; it cannot produce COMPLETE_AND_VERIFIED.
+Session and receipt publication synchronize the file and containing directory.
+
+The source contract requires an append-only or independently frozen source
+generation. Device/inode/length checks run before and after each range; a final
+full bounded hash pass compares the source to the provider checksum. These
+checks detect observed replacement, truncation and persistent prefix edits.
+They do not establish an SDF delivery-lock protocol or prevent an adversarial
+same-inode edit-and-restore race. Qualifying the real source's generation/lock
+behavior remains a live gate. Appends beyond T are allowed. Neither raw archival
+nor that gate requires mbox parsing, SPEC-LIST filing, or source mutation.
+
+The independent filing work in `isomorphisms/mbox` consumes retained byte
+generations later. Its parser/move receipts do not qualify this SSH/Drive path,
+and an archival receipt never authorizes refiling or deletion.
 
 No command in this repository starts the 4.4-GB transfer merely because the
 fake transport tests pass. Physical SDF access and live Drive write acceptance
