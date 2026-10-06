@@ -92,6 +92,9 @@ jobs:
         run: |
           set -euo pipefail
           export GREASE="$PWD/grease-source/bin/osh"
+          mkdir -p _/test-bin
+          cc -std=c99 -Wall -Wextra -Werror -O2 commands/google-drive-upload-state.c -o _/test-bin/google-drive-upload-state
+          export GOOGLE_DRIVE_UPLOAD_STATE="$PWD/_/test-bin/google-drive-upload-state"
           sh tests/google-drive-api.sh
           sh tests/google-drive-files.sh
           sh tests/google-drive-unzip.sh

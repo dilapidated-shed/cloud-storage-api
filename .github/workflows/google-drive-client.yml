@@ -96,7 +96,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/source" -w /source/grease-source \
             python:2.7.18-buster@sha256:c934af72b8bd03b9804d5bde2569c320926e70392d708d113a2e71bcf98c8a20 \
-            sh build/py.sh minimal
+            build/py.sh minimal
       - name: Produce Android client bundle through Grease
         shell: sh
         run: |
