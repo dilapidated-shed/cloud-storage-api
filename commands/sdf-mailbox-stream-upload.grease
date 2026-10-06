@@ -101,13 +101,13 @@ write_initial_receipt() {
         --arg started_at "$archival_started_at" \
         --arg session_file "$session_file" \
         --arg chunk_size "$chunk_size" \
-        --arg requested_name "$drive_name" --arg parent_id "$parent_id" \
+        --arg name "$drive_name" --arg parent "$parent_id" \
         '{kind:"sdf-mailbox-archive-receipt",status:$status,
           source:{ssh_target:$target,path:$source_path,device:$source_device,
                   inode:$source_inode,total_bytes:($total|tonumber),
                   archival_started_at:$started_at},
           drive:{session_file:$session_file,chunk_size:($chunk_size|tonumber),
-                 requested_name:$requested_name,parent_id:$parent_id}}' \
+                 requested_name:$name,parent_id:$parent}}' \
         > "$receipt_temporary"
     chmod 600 "$receipt_temporary"
     "$upload_state" commit "$receipt_temporary" "$receipt_file"
@@ -132,7 +132,7 @@ finalize_receipt() {
         --arg started_at "$archival_started_at" \
         --arg session_file "$session_file" \
         --arg chunk_size "$chunk_size" \
-        --arg requested_name "$drive_name" --arg parent_id "$parent_id" \
+        --arg name "$drive_name" --arg parent "$parent_id" \
         --arg source_sha256 "$source_sha256" \
         --arg acknowledged "$acknowledged" \
         --arg object_id "$provider_id" \
@@ -145,7 +145,7 @@ finalize_receipt() {
                   inode:$source_inode,total_bytes:($total|tonumber),
                   archival_started_at:$started_at,sha256:$source_sha256},
           drive:{session_file:$session_file,chunk_size:($chunk_size|tonumber),
-                 requested_name:$requested_name,parent_id:$parent_id,
+                 requested_name:$name,parent_id:$parent,
                  acknowledged_bytes:($acknowledged|tonumber),object_id:$object_id,
                  object_name:$object_name,destination_size:($destination_size|tonumber),
                  provider_sha256:(if $provider_sha256=="" then null else $provider_sha256 end),
@@ -174,8 +174,18 @@ done
 [ -n "$session_file" ] || fail '--session-file is required'
 [ -n "$receipt_file" ] || fail '--receipt-file is required'
 validate_decimal chunk_size "$chunk_size"
-case $target in ''|-*|*[!A-Za-z0-9@._-]*) fail 'unsupported SDF SSH target' ;; esac
 [ "$session_file" != "$receipt_file" ] || fail 'session and receipt paths must differ'
+case $target in
+    -*|''|*[!A-Za-z0-9_@.-]*) fail 'SSH target must be an explicit safe account/host name' ;;
+esac
+case $source_path in
+    /*) ;;
+    *) fail 'SDF source path must be absolute' ;;
+esac
+umask 077
+for private_file in "$session_file" "$receipt_file"; do
+    [ ! -L "$private_file" ] || fail 'session and receipt must not be symlinks'
+done
 if [ -f "$receipt_file" ]; then
     prior_status=$(jq -r '.status // empty' "$receipt_file")
     prior_target=$(jq -r '.source.ssh_target // empty' "$receipt_file")
@@ -183,15 +193,21 @@ if [ -f "$receipt_file" ]; then
     [ "$prior_target" = "$target" ] || fail 'receipt belongs to another SDF SSH target'
     [ "$prior_path" = "$source_path" ] || fail 'receipt belongs to another SDF source path'
     [ "$(jq -r '.drive.requested_name // empty' "$receipt_file")" = "$drive_name" ] ||
-        fail 'receipt belongs to another requested Drive name (or needs old-receipt reconciliation)'
-    [ "$(jq -r '.drive.parent_id // empty' "$receipt_file")" = "$parent_id" ] ||
-        fail 'receipt belongs to another requested Drive parent'
+        fail 'receipt belongs to another Drive destination name; legacy receipts need reconciliation'
+    [ "$(jq -r '.drive.parent_id // ""' "$receipt_file")" = "$parent_id" ] ||
+        fail 'receipt belongs to another Drive parent'
+    [ "$(jq -r '.drive.session_file // empty' "$receipt_file")" = "$session_file" ] ||
+        fail 'receipt belongs to another session path'
+    [ "$(jq -r '.drive.chunk_size // empty' "$receipt_file")" = "$chunk_size" ] ||
+        fail 'receipt has another chunk size'
     if [ "$prior_status" = COMPLETE_AND_VERIFIED ]; then
-        jq -e '.source.sha256 == .drive.provider_sha256 and
-               (.source.sha256 | test("^[0-9a-f]{64}$")) and
-               .source.total_bytes == .drive.destination_size and
-               .source.total_bytes == .drive.acknowledged_bytes' "$receipt_file" >/dev/null ||
-            fail 'completed archival receipt lacks exact-byte verification'
+        jq -e '.source.sha256 as $hash |
+          ($hash | type == "string" and test("^[0-9a-f]{64}$")) and
+          .drive.provider_sha256 == $hash and
+          .drive.destination_size == .source.total_bytes and
+          .drive.acknowledged_bytes == .source.total_bytes and
+          (.drive.object_id | type == "string" and length > 0)' "$receipt_file" >/dev/null ||
+            fail 'completed receipt lacks exact-byte provider verification'
         cat -- "$receipt_file"
         exit 0
     fi

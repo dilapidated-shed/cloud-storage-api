@@ -183,6 +183,7 @@ jobs:
           sh tests/google-drive-download.sh
           sh tests/sdf-mailbox-stream-upload.sh
           sh tests/google-drive-upload-stream.sh
+          "$GREASE" tests/sdf-completed-receipt.grease
 
       - name: State evidence boundary
         shell: sh

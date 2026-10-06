@@ -19,15 +19,17 @@ existing read-only credential cannot create the archive.
 
 ## Termux invocation
 
-Set GOOGLE_DRIVE_CREDENTIAL_FILE to the mode-0600 credential and set GREASE to
-the exact Grease/Osh executable on the phone. Then run from the checked-out
-repository, with explicit durable paths for the session and receipt:
+This is a command interface description, not a prepared mobile paste procedure.
+Cat Food issue 117 must deliver the commands and qualified fixed-width helpers;
+Kitchen owns the target-verified procedure. Set GOOGLE_DRIVE_CREDENTIAL_FILE to
+the mode-0600 credential and GREASE to the exact installed Grease runtime. A
+phone source checkout and phone compilation are not prerequisites.
 
-GREASE=/absolute/path/to/grease/bin/osh
+GREASE=/absolute/path/to/grease
 GOOGLE_DRIVE_CREDENTIAL_FILE=/absolute/private/google-drive.credentials
 GOOGLE_DRIVE_UPLOAD_STATE=/absolute/path/to/google-drive-upload-state
 export GREASE GOOGLE_DRIVE_CREDENTIAL_FILE GOOGLE_DRIVE_UPLOAD_STATE
-"$GREASE" /absolute/path/to/cloud-storage-api/commands/sdf-mailbox-stream-upload.grease \
+"$GREASE" /absolute/path/to/installed/sdf-mailbox-stream-upload.grease \
   --session-file /absolute/private/sdf-mailbox.upload.session \
   --receipt-file /absolute/private/sdf-mailbox.archive.receipt \
   --name sdf-mailbox-archive
@@ -39,26 +41,21 @@ session file contains the bearer-capability URI and must remain mode 0600;
 diagnostics and receipts do not print or copy that URI.
 
 The final receipt records the source identity and length, archival start time,
-Drive session-file location, object ID/name, destination size, source SHA-256,
-and provider SHA-256 when Drive supplies one. Completion means Drive returned
-completed object metadata, exact destination size matched T, and the SHA-256
-comparison succeeded. A missing provider SHA-256 leaves the transfer
-unverified and retains the session; it cannot produce COMPLETE_AND_VERIFIED.
-Session and receipt publication synchronize the file and containing directory.
-
-The source contract requires an append-only or independently frozen source
-generation. Device/inode/length checks run before and after each range; a final
-full bounded hash pass compares the source to the provider checksum. These
-checks detect observed replacement, truncation and persistent prefix edits.
-They do not establish an SDF delivery-lock protocol or prevent an adversarial
-same-inode edit-and-restore race. Qualifying the real source's generation/lock
-behavior remains a live gate. Appends beyond T are allowed. Neither raw archival
-nor that gate requires mbox parsing, SPEC-LIST filing, or source mutation.
-
-The independent filing work in `isomorphisms/mbox` consumes retained byte
-generations later. Its parser/move receipts do not qualify this SSH/Drive path,
-and an archival receipt never authorizes refiling or deletion.
+Drive session-file location, requested destination name/parent, object ID/name,
+destination size, source SHA-256 and provider SHA-256. Completion requires exact
+size and a matching provider SHA-256. A missing checksum refuses exact-byte
+acceptance. Before cached completion is returned, the command checks source,
+destination, session and chunk identity. A legacy receipt missing these fields
+requires explicit reconciliation and is not silently accepted.
 
 No command in this repository starts the 4.4-GB transfer merely because the
 fake transport tests pass. Physical SDF access and live Drive write acceptance
 must be exercised separately.
+
+The current sidecar helper synchronizes session/receipt bytes and their parent
+directory before publication. Source device/inode/length checks run before and
+after each bounded range. They do not qualify SDF cluster-node continuity or a
+delivery-lock/frozen generation protocol. Pre/post hashes and the provider digest
+do not prevent a same-inode edit-and-restore race. Actual source behavior remains
+a live gate. mbox occurrence parsing and SPEC-LIST refiling consume a retained
+generation later and never authorize archival source mutation.

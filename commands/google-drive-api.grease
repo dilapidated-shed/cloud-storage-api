@@ -622,9 +622,9 @@ status_query() {
     case $response_status in
         200|201)
             provider_response=$(cat -- "$response_body")
-            receipt_status=complete
             next_offset=$media_size
             fetch_final_metadata
+            receipt_status=complete
             return 0
             ;;
         308)
@@ -663,8 +663,8 @@ send_upload_chunk() {
         200|201)
             provider_response=$(cat -- "$response_body")
             next_offset=$media_size
-            receipt_status=complete
             fetch_final_metadata
+            receipt_status=complete
             ;;
         308)
             parse_acknowledged_range
@@ -759,8 +759,8 @@ request_resumable_upload() {
             [ "$response_status" = 200 ] || [ "$response_status" = 201 ] ||
                 fail "zero-byte upload returned HTTP $response_status"
             provider_response=$(cat -- "$response_body")
-            receipt_status=complete
             fetch_final_metadata
+            receipt_status=complete
         fi
     else
         while [ "$next_offset" != "$media_size" ]; do

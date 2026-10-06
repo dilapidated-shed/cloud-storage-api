@@ -59,7 +59,7 @@ case $url in
         write_response 200
         case $scenario in final-size-mismatch) size=999 ;; *) size=$total ;; esac
         checksum=$FAKE_SHA256
-        [ "$scenario" = missing-checksum ] && checksum=
+        [ "$scenario" = final-checksum-missing ] && checksum=
         [ "$scenario" = final-checksum-mismatch ] && checksum=0000000000000000000000000000000000000000000000000000000000000000
         if [ -n "$checksum" ]; then
             printf '{"id":"OBJ","name":"archive","size":"%s","sha256Checksum":"%s"}\n' "$size" "$checksum" > "$output_file"
@@ -134,7 +134,7 @@ run_upload() {
     source_mode=${FAKE_SOURCE_MODE:-normal}
     [ "$scenario" = short ] && source_mode=short
     FAKE_SCENARIO=$scenario FAKE_TOTAL=$total FAKE_STATE=$state FAKE_LOG=$log \
-    FAKE_SHA256=$(dd if=/dev/zero bs=1 count="$total" 2>/dev/null | sha256sum | awk '{print $1}') \
+    FAKE_SHA256=$(dd if=/dev/zero bs=1 count="$total" 2>/dev/null | sha256sum | cut -d ' ' -f 1) \
     FAKE_SOURCE_MODE=$source_mode PATH=$fake_bin:$PATH GOOGLE_ACCESS_TOKEN=token GOOGLE_DRIVE_UPLOAD_STATE=$helper \
         "$runner" "$client" files.create --body "$metadata" --source-program "$producer" \
         --media-size "$total" --chunk-size 524288 --session-file "$session" \
@@ -156,7 +156,7 @@ if run_upload noncontiguous-range 700000 >/dev/null 2>&1; then
     printf '%s\n' 'noncontiguous range unexpectedly passed' >&2
     exit 1
 fi
-for scenario in session-expired final-size-mismatch final-checksum-mismatch missing-checksum; do
+for scenario in session-expired final-size-mismatch final-checksum-mismatch final-checksum-missing; do
     if run_upload "$scenario" 700000 >/dev/null 2>&1; then
         printf 'scenario unexpectedly passed: %s\n' "$scenario" >&2
         exit 1

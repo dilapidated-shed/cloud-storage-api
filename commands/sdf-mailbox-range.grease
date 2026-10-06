@@ -28,6 +28,9 @@ validate_decimal() {
 case $source_path in
     ''|*[!A-Za-z0-9_./-]*) fail 'SDF mailbox path contains unsupported bytes' ;;
 esac
+case $target in
+    -*|''|*[!A-Za-z0-9_@.-]*) fail 'SSH target must be an explicit safe account/host name' ;;
+esac
 validate_decimal source_total "$source_total"
 validate_decimal source_offset "$source_offset"
 validate_decimal source_length "$source_length"

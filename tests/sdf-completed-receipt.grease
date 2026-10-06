@@ -1,0 +1,31 @@
+#!/usr/bin/env grease
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+runner=${GREASE:?set GREASE to the verified runtime}
+temporary=$(mktemp -d)
+trap 'rm -rf -- "$temporary"' EXIT HUP INT TERM
+hash=$(printf source | sha256sum | cut -d ' ' -f 1)
+receipt=$temporary/archive.receipt
+session=$temporary/archive.session
+jq -n --arg hash "$hash" --arg session "$session" '
+ {status:"COMPLETE_AND_VERIFIED",
+  source:{ssh_target:"isomorphisms@tty.sdf.org",path:"/var/mail/isomorphisms",total_bytes:6,sha256:$hash},
+  drive:{requested_name:"sdf-mailbox-archive",parent_id:"",session_file:$session,
+         chunk_size:67108864,object_id:"fixture-object",destination_size:6,
+         acknowledged_bytes:6,provider_sha256:$hash}}' > "$receipt"
+run_archive() {
+  "$runner" "$root/commands/sdf-mailbox-stream-upload.grease" \
+    --session-file "$session" --receipt-file "$receipt" "$@"
+}
+run_archive >/dev/null
+for option in '--source-path' '--target' '--name' '--parent-id'; do
+  if run_archive "$option" different >/dev/null 2> "$temporary/error"; then
+    printf 'FAIL completed receipt accepted another %s\n' "$option" >&2
+    exit 1
+  fi
+done
+jq '.drive.provider_sha256 = null' "$receipt" > "$temporary/bad"
+mv "$temporary/bad" "$receipt"
+if run_archive >/dev/null 2> "$temporary/error"; then exit 1; fi
+grep -F 'exact-byte provider verification' "$temporary/error" >/dev/null
+printf 'PASS SDF completed-receipt identity and exact-byte refusal; live transfer NOT_RUN\n'

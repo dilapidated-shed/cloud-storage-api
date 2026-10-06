@@ -1,5 +1,8 @@
 # cloud-storage-api
 
+The [storage line and ownership boundary](docs/storage-line.md) separates
+provider transport, retained corpus sources, deployment, execution and evidence.
+
 Drive common cloud storage operations from the shell.
 
 The first documented backend is Google Drive API v3. Keep the upstream API
