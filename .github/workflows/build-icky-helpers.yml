@@ -1,0 +1,50 @@
+name: Build pinned ICK storage helpers
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-icky-helpers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: python:2.7.18-buster@sha256:c934af72b8bd03b9804d5bde2569c320926e70392d708d113a2e71bcf98c8a20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check out pinned actual ICK
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: dilapidated-shed/ick
+          ref: 143e29580c2644ea0f345fe609fa5673d036865d
+          path: _/ick
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out frozen storage-helper controls
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: dilapidated-shed/cloud-storage-api
+          ref: d6cbc1fb4dc7c0eafdb24512cde194288bd0476e
+          path: _/reference
+          persist-credentials: false
+      - name: Build ICK and its own target runtimes in the declared consumer image
+        run: make -f qualification/Makefile dependencies compiler
+      - name: Check out the converted-source guard
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/ai-ci
+          ref: f538ed81669ceb2d521b65fc3b3af7c2e51dd2f2
+          path: _/ai-ci
+          persist-credentials: false
+      - name: Build helpers and exercise value maps and frozen ZIP controls
+        run: make -f qualification/Makefile tests guard receipt
+      - name: Preserve exact-head binaries and compiler receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: icky-storage-helpers-${{ github.run_id }}
+          path: _/qualification/binaries/
+          if-no-files-found: error

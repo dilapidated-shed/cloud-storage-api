@@ -20,6 +20,8 @@ on:
       - tests/live-takeout-extract.sh
       - tests/live-find-chatgpt-export.sh
       - .github/workflows/google-drive-client.yml
+      - .github/workflows/build-icky-helpers.yml
+      - qualification/**
   push:
     branches: [main]
     paths:
@@ -40,6 +42,8 @@ on:
       - tests/live-takeout-extract.sh
       - tests/live-find-chatgpt-export.sh
       - .github/workflows/google-drive-client.yml
+      - .github/workflows/build-icky-helpers.yml
+      - qualification/**
 
 concurrency:
   group: google-drive-client-${{ github.head_ref || github.ref_name }}
@@ -52,7 +56,11 @@ env:
   GREASE_SOURCE_REVISION: 8052868773077602266d80bf39aad6998e2da749
 
 jobs:
+  icky-helpers:
+    uses: ./.github/workflows/build-icky-helpers.yml
+
   oauth-and-restartable-download:
+    needs: icky-helpers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
@@ -71,18 +79,22 @@ jobs:
           path: grease-source
           persist-credentials: false
 
-      - name: Build fixed-width helpers and exact Grease runtime
+      - name: Retrieve actual ICK-built helper binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: icky-storage-helpers-${{ github.run_id }}
+          path: _/test-bin
+
+      - name: Build exact Grease runtime and enable the qualified helpers
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C grease-source rev-parse HEAD)" = "$GREASE_SOURCE_REVISION"
           mkdir -p _/test-bin
-          cc -std=c99 -Wall -Wextra -Werror -O2 \
-            commands/google-oauth-loopback.c \
-            -o _/test-bin/google-oauth-loopback
-          cc -std=c99 -Wall -Wextra -Werror -O2 \
-            commands/google-drive-download-state.c \
-            -o _/test-bin/google-drive-download-state
+          test "$(cat _/test-bin/consumer-commit.txt)" = "$(git rev-parse HEAD)"
+          sha256sum -c _/test-bin/source.sha256
+          (cd _/test-bin && sha256sum -c binaries.sha256)
+          chmod +x _/test-bin/google-oauth-loopback _/test-bin/google-drive-download-state
           (cd grease-source && build/py.sh minimal)
           grease-source/bin/osh -c 'echo grease-runtime-ready'
 

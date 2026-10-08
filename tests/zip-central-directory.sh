@@ -4,8 +4,11 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source_c=${ZIP_CENTRAL_DIRECTORY_SOURCE:-$root/commands/zip-central-directory.c}
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-helper=$temporary/zip-central-directory
-cc -std=c99 -Wall -Wextra -Werror -O2 "$source_c" -o "$helper"
+helper=${ZIP_CENTRAL_DIRECTORY:-$temporary/zip-central-directory}
+if [ -z "${ZIP_CENTRAL_DIRECTORY:-}" ]; then
+    : "${ICK:?set ICK to the qualified Icky C compiler}"
+    "$ICK" -fno-link-libatomic -std=c99 -Wall -Wextra -Werror -O2 "$source_c" -o "$helper"
+fi
 
 python3 - "$temporary" <<'PY'
 import os, struct, sys, warnings, zipfile, zlib
