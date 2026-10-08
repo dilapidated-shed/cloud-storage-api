@@ -11,6 +11,8 @@ on:
       - tests/zip-central-directory.sh
       - tests/google-drive-zip-inventory.sh
       - .github/workflows/google-drive-zip-range.yml
+      - .github/workflows/build-icky-helpers.yml
+      - qualification/**
   push:
     branches: [main]
     paths:
@@ -22,6 +24,8 @@ on:
       - tests/zip-central-directory.sh
       - tests/google-drive-zip-inventory.sh
       - .github/workflows/google-drive-zip-range.yml
+      - .github/workflows/build-icky-helpers.yml
+      - qualification/**
 
 concurrency:
   group: google-drive-zip-range-${{ github.head_ref || github.ref_name }}
@@ -34,16 +38,32 @@ env:
   GREASE_SOURCE_REVISION: 8052868773077602266d80bf39aad6998e2da749
 
 jobs:
+  icky-helpers:
+    uses: ./.github/workflows/build-icky-helpers.yml
+
   stage-1-local-zip-range:
+    needs: icky-helpers
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Retrieve actual ICK-built helper binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: icky-storage-helpers-${{ github.run_id }}
+          path: _/test-bin
 
       - name: Exercise deterministic local ZIP and ZIP64 range fixtures
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_CENTRAL_DIRECTORY_SOURCE="$PWD/commands/zip-central-directory.c" \
+          test "$(cat _/test-bin/consumer-commit.txt)" = "$(git rev-parse HEAD)"
+          sha256sum -c _/test-bin/source.sha256
+          (cd _/test-bin && sha256sum -c binaries.sha256)
+          chmod +x _/test-bin/zip-central-directory
+          ZIP_CENTRAL_DIRECTORY="$PWD/_/test-bin/zip-central-directory" \
             sh tests/zip-central-directory.sh
 
       - name: State stage 1 evidence boundary
@@ -53,6 +73,7 @@ jobs:
             'PASS stage 1: deterministic local classic ZIP and sparse ZIP64 bounded-range parsing and rejection policy only; no Drive or Grease claim.'
 
   stage-2-fake-drive-grease:
+    needs: icky-helpers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
@@ -60,6 +81,8 @@ jobs:
     steps:
       - name: Check out cloud storage commands
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check out exact Grease source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -69,16 +92,22 @@ jobs:
           path: grease-source
           persist-credentials: false
 
-      - name: Build helper and exact Grease development runtime
+      - name: Retrieve actual ICK-built helper binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: icky-storage-helpers-${{ github.run_id }}
+          path: _/test-bin
+
+      - name: Build exact Grease development runtime and enable the qualified helper
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C grease-source rev-parse HEAD)" = "$GREASE_SOURCE_REVISION"
-          cc --version
           mkdir -p _/test-bin
-          cc -std=c99 -Wall -Wextra -Werror -O2 \
-            commands/zip-central-directory.c \
-            -o _/test-bin/zip-central-directory
+          test "$(cat _/test-bin/consumer-commit.txt)" = "$(git rev-parse HEAD)"
+          sha256sum -c _/test-bin/source.sha256
+          (cd _/test-bin && sha256sum -c binaries.sha256)
+          chmod +x _/test-bin/zip-central-directory
           (cd grease-source && build/py.sh minimal)
           grease-source/bin/osh -c 'x=hello; ⟦ -n "$x" ∧ ¬ "$x" = no ⟧ ∧ echo grease-runtime-ready'
 

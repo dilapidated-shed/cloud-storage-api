@@ -2,6 +2,10 @@
 
 Drive common cloud storage operations from the shell.
 
+The maintained native helpers use typed value maps in Icky C. Their
+[compiler, source roles and qualification](docs/icky-native-helpers.md) keep
+Grease provider ownership and local C effects explicit.
+
 The first documented backend is Google Drive API v3. Keep the upstream API
 contract, our notes, higher-level provider workflows, and executable code
 separate:
